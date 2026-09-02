@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# STM32CubeIDE workspace and build output
+.metadata/
+**/Debug/
+**/Release/
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.o
+*.d
+*.su
+*.cyclo
+
+# Arduino generated build output
+Arduino/**/build/
+
+# Editors and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary, local backup and archive files
+*.tmp
+*.bak
+*.zip
+archive/
+
+# Logs and secrets
+*.log
+.env
+.env.*
+!.env.example
+
