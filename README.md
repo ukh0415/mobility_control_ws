@@ -9,8 +9,8 @@
 ├─ AGENTS.md                    프로젝트 공통 작업 지침
 ├─ VERSION.md                   구성요소 및 도구 버전 기준
 ├─ pc/                          Windows PC 상위 제어 프로그램
-├─ Arduino/esp32_i2c_master/    ESP32 통신 허브 펌웨어
-├─ mobility/                    STM32CubeIDE 프로젝트
+├─ esp32/esp32_i2c_master/      ESP32 통신 허브 펌웨어
+├─ stm32/mobility/              STM32CubeIDE 프로젝트
 ├─ protocol/                    공용 명령·상태 프로토콜
 ├─ agents/docs/                 설계·시험·troubleshooting 문서
 ├─ tests/                       자동 및 수동 테스트 자산
@@ -26,7 +26,7 @@ python -m pip install -r requirements.txt
 python .\pc\robot_control_client_serial.py
 ```
 
-STM32CubeIDE에서는 저장소 내부의 `mobility/` 프로젝트를 import하거나 현재 워크스페이스에서 연다. ESP32는 `Arduino/esp32_i2c_master/esp32_i2c_master.ino`를 연다.
+STM32CubeIDE에서는 저장소 내부의 `stm32/mobility/` 프로젝트를 import한다. ESP32는 `esp32/esp32_i2c_master/esp32_i2c_master.ino`를 연다.
 
 ## 작업 전 필독
 

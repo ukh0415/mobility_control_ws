@@ -19,7 +19,7 @@ venv/
 *.cyclo
 
 # Arduino generated build output
-Arduino/**/build/
+esp32/**/build/
 
 # Editors and operating system
 .vscode/
@@ -38,4 +38,3 @@ archive/
 .env
 .env.*
 !.env.example
-

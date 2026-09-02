@@ -6,14 +6,14 @@
 
 - 저장소 루트: 현재 `AGENTS.md`가 있는 폴더
 - PC 제어 프로그램: `pc/`
-- ESP32 Arduino 프로젝트: `Arduino/esp32_i2c_master/`
-- STM32CubeIDE 프로젝트: `mobility/`
+- ESP32 Arduino 프로젝트: `esp32/esp32_i2c_master/`
+- STM32CubeIDE 프로젝트: `stm32/mobility/`
 - 공용 통신 규격: `protocol/`
 - 기술 문서와 문제 해결 기록: `agents/docs/`
 - 테스트: `tests/`
 - 참고용 백업: `archive/`
 
-STM32의 유효한 프로젝트는 이 저장소의 `mobility/`이다. `C:\STM32_Work\mobility` 등 저장소 외부의 과거 사본을 기준으로 수정하거나 빌드하지 않는다.
+STM32의 유효한 프로젝트는 이 저장소의 `stm32/mobility/`이다. `C:\STM32_Work\mobility` 등 저장소 외부의 과거 사본을 기준으로 수정하거나 빌드하지 않는다.
 
 ## 2. 작업 시작 전 확인
 
@@ -113,4 +113,3 @@ YYYYMMDD_HHMMSS_간단한_문제명.md
 - 공용 프로토콜 변경은 관련 담당자 모두의 검토 후 병합한다.
 - Pull Request에 변경 목적, 영향 범위, 시험 결과와 남은 문제를 기록한다.
 - 비밀키, 개인 포트 설정, 빌드 결과물, IDE 워크스페이스 메타데이터와 임시 백업을 커밋하지 않는다.
-
