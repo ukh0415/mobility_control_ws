@@ -1,6 +1,5 @@
 """
-로봇 키보드 제어 클라이언트 - USB 시리얼 버전
-
+로봇 키보드 제어 클라이언트 - USB 시리얼 버전cd
 WiFi(ROBOT_AP) 대신 USB 케이블로 ESP32와 직접 통신합니다.
 노트북 WiFi를 인터넷용으로 그대로 쓸 수 있어서 테스트할 때 편합니다.
 
@@ -25,7 +24,7 @@ import time
 import serial
 
 # ---- 설정값 ----
-SERIAL_PORT = "COM7"        # 본인 환경에 맞게 수정하세요
+SERIAL_PORT = "COM10"        # 본인 환경에 맞게 수정하세요
 BAUD_RATE = 115200
 REPEAT_INTERVAL = 0.1        # 이동 명령 재전송 주기(초)
 RECONNECT_INTERVAL = 1.0     # 연결 끊겼을 때 재시도 주기(초)
