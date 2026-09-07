@@ -12,7 +12,8 @@
     ESP32 GPIO22 (SCL) -> 4개 STM32 SCL 핀 전부 병렬 연결 (버스에 4.7kΩ 풀업 1개)
     GND 공통
 
-  상태 패킷 포맷 (STM32 1개당 3바이트):
+  상태 패킷 포맷 (STM32 1개당 8바이트, protocol/protocol.md):
+    byte3: version=2, byte4..7: motor2 count (int32 little-endian)
     byte0        : mode        (0=바퀴모드, 1=계단1단계, 2=완전궤도모드)
     byte1,byte2  : leg_angle   (int16, little-endian, 0.1도 단위 → 실제각도 = 값/10.0)
 
@@ -43,6 +44,7 @@ unsigned long lastPollTime = 0;
 struct LegStatus {
   uint8_t mode;
   int16_t angle_tenths;  // 0.1도 단위
+  int32_t motor2_encoder_count;
   bool ok;                // 이번 사이클에 정상 응답했는지
 };
 LegStatus legs[4];
@@ -54,12 +56,23 @@ uint8_t sendCommandToLeg(uint8_t addr, char cmd) {
 }
 
 bool readStatusFromLeg(uint8_t addr, LegStatus &out, uint8_t &bytesReceived) {
-  bytesReceived = Wire.requestFrom((int)addr, 3);
-  if (bytesReceived < 3) return false;
+  bytesReceived = Wire.requestFrom((int)addr, 8);
+  if (bytesReceived != 8) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
   out.mode = Wire.read();
   uint8_t lo = Wire.read();
   uint8_t hi = Wire.read();
   out.angle_tenths = (int16_t)((hi << 8) | lo);
+  uint8_t version = Wire.read();
+  uint32_t rawCount = 0;
+  for (uint8_t i = 0; i < 4; ++i) {
+    rawCount |= (uint32_t)(uint8_t)Wire.read() << (8U * i);
+  }
+  if (version != 2) return false;
+  out.motor2_encoder_count = (rawCount <= INT32_MAX)
+      ? (int32_t)rawCount : -1 - (int32_t)(UINT32_MAX - rawCount);
   return true;
 }
 
@@ -108,6 +121,8 @@ void printStatusToSerial() {
       Serial.print(legs[i].mode);
       Serial.print(" angle=");
       Serial.print(legs[i].angle_tenths / 10.0, 1);
+      Serial.print(" motor2_count=");
+      Serial.print(legs[i].motor2_encoder_count);
     }
     Serial.print("  |  ");
   }

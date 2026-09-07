@@ -52,12 +52,13 @@ CornerId cornerId;
 uint8_t myAddress;
 
 uint8_t i2c_rx_buf[1];
-uint8_t i2c_tx_buf[3];
+uint8_t i2c_tx_buf[8];
 volatile char lastCommand = 'k';
 
 uint8_t currentMode = 0;
 int16_t carrierAngleTenths = 0;
 volatile int32_t encoderCount = 0;
+volatile int32_t motor2_encoder_count = 0; /* PB3 rising edges, x1 decoding. */
 
 /* USER CODE END PV */
 
@@ -144,9 +145,14 @@ void ApplyCommand(char cmd)
 
 void PrepareStatusBuffer(void)
 {
+  uint32_t motor2_snapshot = (uint32_t)motor2_encoder_count;
   i2c_tx_buf[0] = currentMode;
   i2c_tx_buf[1] = (uint8_t)(carrierAngleTenths & 0xFF);
   i2c_tx_buf[2] = (uint8_t)(((uint16_t)carrierAngleTenths >> 8) & 0xFFU);
+  i2c_tx_buf[3] = 2U; /* Diagnostic status protocol version. */
+  for (uint32_t i = 0; i < 4U; ++i) {
+    i2c_tx_buf[4U + i] = (uint8_t)(motor2_snapshot >> (8U * i));
+  }
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
@@ -157,7 +163,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
     HAL_I2C_Slave_Sequential_Receive_IT(hi2c, i2c_rx_buf, 1, I2C_FIRST_AND_LAST_FRAME);
   } else {
     PrepareStatusBuffer();
-    HAL_I2C_Slave_Sequential_Transmit_IT(hi2c, i2c_tx_buf, 3, I2C_FIRST_AND_LAST_FRAME);
+    HAL_I2C_Slave_Sequential_Transmit_IT(hi2c, i2c_tx_buf, sizeof(i2c_tx_buf), I2C_FIRST_AND_LAST_FRAME);
   }
 }
 
@@ -182,6 +188,15 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
+  if (GPIO_Pin == MOTOR2_ENC_A_Pin)
+  {
+    /* Explicit wrap avoids signed overflow after prolonged operation. */
+    if (HAL_GPIO_ReadPin(MOTOR2_ENC_B_GPIO_Port, MOTOR2_ENC_B_Pin) == GPIO_PIN_RESET) {
+      motor2_encoder_count = (motor2_encoder_count == INT32_MAX) ? INT32_MIN : motor2_encoder_count + 1;
+    } else {
+      motor2_encoder_count = (motor2_encoder_count == INT32_MIN) ? INT32_MAX : motor2_encoder_count - 1;
+    }
+  }
   if (GPIO_Pin == GPIO_PIN_4)
   {
     if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_5) == GPIO_PIN_RESET)
@@ -564,6 +579,17 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* PB3 is released from JTAG by HAL_MspInit; SWD remains available. */
+  GPIO_InitStruct.Pin = MOTOR2_ENC_B_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(MOTOR2_ENC_B_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = MOTOR2_ENC_A_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  HAL_GPIO_Init(MOTOR2_ENC_A_GPIO_Port, &GPIO_InitStruct);
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
 
   /* USER CODE END MX_GPIO_Init_2 */
 }

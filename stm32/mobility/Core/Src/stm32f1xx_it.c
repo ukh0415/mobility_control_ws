@@ -241,5 +241,9 @@ void I2C1_ER_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+void EXTI3_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(MOTOR2_ENC_A_Pin);
+}
 
 /* USER CODE END 1 */

@@ -66,6 +66,10 @@ void Error_Handler(void);
 #define WHEEL_ENC_B_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
+#define MOTOR2_ENC_A_Pin GPIO_PIN_3
+#define MOTOR2_ENC_A_GPIO_Port GPIOB
+#define MOTOR2_ENC_B_Pin GPIO_PIN_5
+#define MOTOR2_ENC_B_GPIO_Port GPIOB
 
 /* USER CODE END Private defines */
 
