@@ -12,12 +12,13 @@
     ESP32 GPIO22 (SCL) -> 4개 STM32 SCL 핀 전부 병렬 연결 (버스에 4.7kΩ 풀업 1개)
     GND 공통
 
-  상태 패킷 포맷 (STM32 1개당 3바이트):
-    byte0        : mode        (0=바퀴모드, 1=계단1단계, 2=완전궤도모드)
-    byte1,byte2  : leg_angle   (int16, little-endian, 0.1도 단위 → 실제각도 = 값/10.0)
+  상태 패킷 포맷 (STM32 1개당 5바이트):
+    byte0        : mode          (0=바퀴모드, 1=계단1단계, 2=완전궤도모드)
+    byte1,byte2  : motor1_count  (int16, little-endian, 원시 엔코더 카운트)
+    byte3,byte4  : motor2_count  (int16, little-endian, 원시 엔코더 카운트)
 
   노트북으로 보내는 상태 라인 포맷 (텍스트, 사람이 보기 쉽게):
-    STATUS,mode1,angle1,mode2,angle2,mode3,angle3,mode4,angle4\n
+    STATUS,mode1,enc1_1,enc2_1,mode2,enc1_2,enc2_2,...\n
 */
 
 #include <WiFi.h>
@@ -42,7 +43,8 @@ unsigned long lastPollTime = 0;
 
 struct LegStatus {
   uint8_t mode;
-  int16_t angle_tenths;  // 0.1도 단위
+  int16_t motor1_count;   // 모터 1 원시 엔코더 카운트
+  int16_t motor2_count;   // 모터 2 원시 엔코더 카운트
   bool ok;                // 이번 사이클에 정상 응답했는지
 };
 LegStatus legs[4];
@@ -54,12 +56,19 @@ uint8_t sendCommandToLeg(uint8_t addr, char cmd) {
 }
 
 bool readStatusFromLeg(uint8_t addr, LegStatus &out, uint8_t &bytesReceived) {
-  bytesReceived = Wire.requestFrom((int)addr, 3);
-  if (bytesReceived < 3) return false;
+  bytesReceived = Wire.requestFrom((int)addr, 5);
+  if (bytesReceived < 5) return false;
+
   out.mode = Wire.read();
-  uint8_t lo = Wire.read();
-  uint8_t hi = Wire.read();
-  out.angle_tenths = (int16_t)((hi << 8) | lo);
+
+  uint8_t motor1Lo = Wire.read();
+  uint8_t motor1Hi = Wire.read();
+  out.motor1_count = (int16_t)(((uint16_t)motor1Hi << 8) | motor1Lo);
+
+  uint8_t motor2Lo = Wire.read();
+  uint8_t motor2Hi = Wire.read();
+  out.motor2_count = (int16_t)(((uint16_t)motor2Hi << 8) | motor2Lo);
+
   return true;
 }
 
@@ -89,7 +98,9 @@ void sendStatusToClient() {
     line += ",";
     line += legs[i].ok ? String(legs[i].mode) : "NA";
     line += ",";
-    line += legs[i].ok ? String(legs[i].angle_tenths / 10.0, 1) : "NA";
+    line += legs[i].ok ? String(legs[i].motor1_count) : "NA";
+    line += ",";
+    line += legs[i].ok ? String(legs[i].motor2_count) : "NA";
   }
   line += "\n";
   client.print(line);
@@ -106,8 +117,10 @@ void printStatusToSerial() {
     if (legs[i].ok) {
       Serial.print(" mode=");
       Serial.print(legs[i].mode);
-      Serial.print(" angle=");
-      Serial.print(legs[i].angle_tenths / 10.0, 1);
+      Serial.print(" enc1=");
+      Serial.print(legs[i].motor1_count);
+      Serial.print(" enc2=");
+      Serial.print(legs[i].motor2_count);
     }
     Serial.print("  |  ");
   }

@@ -64,6 +64,11 @@ void Error_Handler(void);
 #define WHEEL_ENC_A_EXTI_IRQn EXTI4_IRQn
 #define WHEEL_ENC_B_Pin GPIO_PIN_5
 #define WHEEL_ENC_B_GPIO_Port GPIOA
+#define MOTOR2_ENC_A_Pin GPIO_PIN_3
+#define MOTOR2_ENC_A_GPIO_Port GPIOB
+#define MOTOR2_ENC_A_EXTI_IRQn EXTI3_IRQn
+#define MOTOR2_ENC_B_Pin GPIO_PIN_5
+#define MOTOR2_ENC_B_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

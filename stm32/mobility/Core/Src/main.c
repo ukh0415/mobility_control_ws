@@ -52,12 +52,14 @@ CornerId cornerId;
 uint8_t myAddress;
 
 uint8_t i2c_rx_buf[1];
-uint8_t i2c_tx_buf[3];
+uint8_t i2c_tx_buf[5];
 volatile char lastCommand = 'k';
 
 uint8_t currentMode = 0;
-int16_t carrierAngleTenths = 0;
+volatile int16_t carrierAngleTenths = 0;
 volatile int32_t encoderCount = 0;
+volatile int16_t motor2EncoderRaw = 0;
+volatile int32_t motor2EncoderCount = 0;
 
 /* USER CODE END PV */
 
@@ -147,6 +149,8 @@ void PrepareStatusBuffer(void)
   i2c_tx_buf[0] = currentMode;
   i2c_tx_buf[1] = (uint8_t)(carrierAngleTenths & 0xFF);
   i2c_tx_buf[2] = (uint8_t)(((uint16_t)carrierAngleTenths >> 8) & 0xFFU);
+  i2c_tx_buf[3] = (uint8_t)(motor2EncoderRaw & 0xFF);
+  i2c_tx_buf[4] = (uint8_t)(((uint16_t)motor2EncoderRaw >> 8) & 0xFFU);
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
@@ -157,7 +161,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
     HAL_I2C_Slave_Sequential_Receive_IT(hi2c, i2c_rx_buf, 1, I2C_FIRST_AND_LAST_FRAME);
   } else {
     PrepareStatusBuffer();
-    HAL_I2C_Slave_Sequential_Transmit_IT(hi2c, i2c_tx_buf, 3, I2C_FIRST_AND_LAST_FRAME);
+    HAL_I2C_Slave_Sequential_Transmit_IT(hi2c, i2c_tx_buf, 5, I2C_FIRST_AND_LAST_FRAME);
   }
 }
 
@@ -182,15 +186,26 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == GPIO_PIN_4)
+  if (GPIO_Pin == WHEEL_ENC_A_Pin)
   {
-    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_5) == GPIO_PIN_RESET)
+    if (HAL_GPIO_ReadPin(WHEEL_ENC_B_GPIO_Port, WHEEL_ENC_B_Pin) == GPIO_PIN_RESET)
     {
       encoderCount++;
     }
     else
     {
       encoderCount--;
+    }
+  }
+  else if (GPIO_Pin == MOTOR2_ENC_A_Pin)
+  {
+    if (HAL_GPIO_ReadPin(MOTOR2_ENC_B_GPIO_Port, MOTOR2_ENC_B_Pin) == GPIO_PIN_RESET)
+    {
+      motor2EncoderCount++;
+    }
+    else
+    {
+      motor2EncoderCount--;
     }
   }
 }
@@ -253,6 +268,7 @@ int main(void)
   while (1)
   {
     carrierAngleTenths = (int16_t)(encoderCount % 32000);
+    motor2EncoderRaw = (int16_t)(motor2EncoderCount % 32000);
 
     if (hi2c1.State == HAL_I2C_STATE_READY)
     {
@@ -559,7 +575,22 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : MOTOR2_ENC_A_Pin */
+  GPIO_InitStruct.Pin = MOTOR2_ENC_A_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(MOTOR2_ENC_A_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : MOTOR2_ENC_B_Pin */
+  GPIO_InitStruct.Pin = MOTOR2_ENC_B_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(MOTOR2_ENC_B_GPIO_Port, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+
   HAL_NVIC_SetPriority(EXTI4_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 
