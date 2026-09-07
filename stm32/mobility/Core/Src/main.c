@@ -31,7 +31,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define MOTOR1_COUNTS_PER_REV 795L
+#define MOTOR2_COUNTS_PER_REV 795L
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,7 +59,7 @@ volatile char lastCommand = 'k';
 uint8_t currentMode = 0;
 volatile int16_t carrierAngleTenths = 0;
 volatile int32_t encoderCount = 0;
-volatile int16_t motor2EncoderRaw = 0;
+volatile int16_t motor2AngleTenths = 0;
 volatile int32_t motor2EncoderCount = 0;
 
 /* USER CODE END PV */
@@ -71,6 +72,7 @@ static void MX_TIM1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
+static int16_t EncoderCountToAngleTenths(int32_t count, int32_t countsPerRev);
 void ReadCornerId(void);
 void ApplyCommand(char cmd);
 void SetMotor(TIM_HandleTypeDef *htim, uint32_t channel,
@@ -82,6 +84,20 @@ void PrepareStatusBuffer(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static int16_t EncoderCountToAngleTenths(int32_t count, int32_t countsPerRev)
+{
+  if (countsPerRev <= 0) return 0;
+
+  int32_t wrappedCount = count % countsPerRev;
+  if (wrappedCount < 0)
+  {
+    wrappedCount += countsPerRev;
+  }
+
+  return (int16_t)(((wrappedCount * 3600L) + (countsPerRev / 2L)) /
+                   countsPerRev);
+}
+
 void ReadCornerId(void)
 {
   uint8_t bitA = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_RESET) ? 0U : 1U;
@@ -149,8 +165,8 @@ void PrepareStatusBuffer(void)
   i2c_tx_buf[0] = currentMode;
   i2c_tx_buf[1] = (uint8_t)(carrierAngleTenths & 0xFF);
   i2c_tx_buf[2] = (uint8_t)(((uint16_t)carrierAngleTenths >> 8) & 0xFFU);
-  i2c_tx_buf[3] = (uint8_t)(motor2EncoderRaw & 0xFF);
-  i2c_tx_buf[4] = (uint8_t)(((uint16_t)motor2EncoderRaw >> 8) & 0xFFU);
+  i2c_tx_buf[3] = (uint8_t)(motor2AngleTenths & 0xFF);
+  i2c_tx_buf[4] = (uint8_t)(((uint16_t)motor2AngleTenths >> 8) & 0xFFU);
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
@@ -267,8 +283,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    carrierAngleTenths = (int16_t)(encoderCount % 32000);
-    motor2EncoderRaw = (int16_t)(motor2EncoderCount % 32000);
+    carrierAngleTenths = EncoderCountToAngleTenths(encoderCount, MOTOR1_COUNTS_PER_REV);
+    motor2AngleTenths = EncoderCountToAngleTenths(motor2EncoderCount, MOTOR2_COUNTS_PER_REV);
 
     if (hi2c1.State == HAL_I2C_STATE_READY)
     {

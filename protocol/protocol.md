@@ -26,19 +26,26 @@ STM32 주소: 0x10, 0x11, 0x12, 0x13
 ## 현재 진단용 상태 패킷
 
 각 STM32는 엔코더 배선과 통신을 검증하기 위해 다음 5바이트 상태를
-ESP32에 전송한다. 아직 각도 환산을 적용하지 않았으므로 두 엔코더 값의
-단위는 `count`이다.
+ESP32에 전송한다. 두 엔코더 값의 단위는 0.1도이다.
 
 ```text
 byte 0      : mode
-byte 1..2   : motor1_encoder_count (int16, little-endian)
-byte 3..4   : motor2_encoder_count (int16, little-endian)
+byte 1..2   : motor1_angle_tenths (int16, little-endian)
+byte 3..4   : motor2_angle_tenths (int16, little-endian)
 ```
 
-ESP32의 텍스트 상태 형식은 활성 다리마다 `mode,enc1,enc2`를 반복한다.
+각도 값의 범위는 `0..3599`이며 `1234`는 `123.4도`를 의미한다. 모터1과 모터2 모두 1회전당 795카운트를 사용하고 반시계 방향을 양수로 정의한다.
+
+ESP32의 TCP 상태 형식은 활성 다리마다 `mode,angle1_tenths,angle2_tenths`를 반복한다.
 
 ```text
-STATUS,mode1,enc1_1,enc2_1,mode2,enc1_2,enc2_2,...\n
+STATUS,mode1,angle1_tenths,angle2_tenths,...\n
+```
+
+ESP32의 USB Serial 진단 출력은 사람이 바로 읽을 수 있도록 도 단위로 표시한다.
+
+```text
+leg[0] addr=0x10 ok=true mode=0 angle1=123.4deg angle2=278.6deg
 ```
 
 이 형식은 기존 3바이트 진단 상태와 호환되지 않으므로 STM32와 ESP32
