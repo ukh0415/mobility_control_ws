@@ -1,24 +1,9 @@
-"""
-로봇 키보드 제어 클라이언트 - USB 시리얼 버전
-
-WiFi(ROBOT_AP) 대신 USB 케이블로 ESP32와 직접 통신합니다.
-노트북 WiFi를 인터넷용으로 그대로 쓸 수 있어서 테스트할 때 편합니다.
-
-사용법:
-    1. pip install pyserial
-    2. Arduino IDE의 시리얼 모니터가 열려있다면 반드시 닫기
-       (같은 COM 포트를 동시에 두 프로그램이 못 씀)
-    3. 아래 SERIAL_PORT를 본인 환경의 COM 포트 번호로 수정
-       (Arduino IDE의 포트 메뉴에서 확인 가능, 예: COM11, COM18 등)
-    4. python robot_control_client_serial.py 실행
-
-3개 모터 독립 제어 키 매핑:
-    i/, 바퀴축 정/역   j/l 선기어 정/역   u/o 고정전환 정/역
-    k 전체 정지
-    ESC 프로그램 종료
+"""Clutch-a carrier bench trial: every p/n press adds/subtracts 20 degrees.
+Motor1/3 disabled. Reset requires a new reference. Windows terminal only.
 """
 
 import msvcrt
+import re
 import threading
 import time
 
@@ -29,22 +14,25 @@ SERIAL_PORT = "COM7"        # 본인 환경에 맞게 수정하세요
 BAUD_RATE = 115200
 REPEAT_INTERVAL = 0.1        # 이동 명령 재전송 주기(초)
 RECONNECT_INTERVAL = 1.0     # 연결 끊겼을 때 재시도 주기(초)
+COMMAND_PULSE_SECONDS = 0.3  # ESP32의 100ms polling에서 여러 번 보이도록 유지
 
-MOVE_KEYS = {"i", ",", "j", "l", "u", "o"}
+MOVE_KEYS = {"z", "p", "n", "r"}
 TOGGLE_KEYS = set()
 STOP_KEY = "k"
 
 # ---- 상태 ----
 ser = None
 ser_lock = threading.Lock()
-active_move_key = None
+active_move_key = "k"
+command_until = 0.0
+last_state = None
 running = True
 
 def connect():
     """ESP32에 시리얼로 연결. 실패하면 None 반환."""
     global ser
     try:
-        s = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
+        s = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1, write_timeout=0.2)
         time.sleep(2)  # ESP32가 시리얼 연결 시 자동 리셋되는 보드가 많아서 안정화 대기
         print(f"[연결됨] {SERIAL_PORT} @ {BAUD_RATE}bps")
         return s
@@ -72,19 +60,23 @@ def send_command(cmd: str):
 
 def connection_manager():
     """백그라운드에서 연결이 끊기면 계속 재연결을 시도."""
-    global ser
+    global ser, active_move_key, command_until, last_state
     while running:
         with ser_lock:
             need_connect = ser is None
         if need_connect:
             new_ser = connect()
             with ser_lock:
+                active_move_key = "k"
+                command_until = 0.0
+                last_state = None
                 ser = new_ser
         time.sleep(RECONNECT_INTERVAL)
 
 
 def status_receiver():
     """ESP32가 시리얼로 보내는 상태/디버그 줄을 그대로 화면에 출력."""
+    global last_state
     while running:
         with ser_lock:
             s = ser
@@ -98,29 +90,28 @@ def status_receiver():
             continue
         if line:
             try:
-                print(line.decode("ascii", errors="ignore").rstrip())
+                text = line.decode("ascii", errors="ignore").rstrip()
+                match = re.search(r"\bstate=(\d+)\b", text)
+                if match:
+                    last_state = int(match.group(1))
+                print(text)
             except UnicodeDecodeError:
                 pass
 
 
 def repeat_sender():
-    """이동 키가 눌려있는 동안 주기적으로 재전송, 없으면 정지 상태 유지."""
-    last_sent_stop = False
+    """명령 pulse 뒤 h heartbeat를 보내며 새 위치 명령을 만들지 않는다."""
+    global active_move_key
     while running:
-        key = active_move_key
-        if key is not None:
-            send_command(key)
-            last_sent_stop = False
-        else:
-            if not last_sent_stop:
-                send_command(STOP_KEY)
-                last_sent_stop = True
+        if active_move_key in MOVE_KEYS and time.monotonic() >= command_until:
+            active_move_key = "h"
+        send_command(active_move_key)
         time.sleep(REPEAT_INTERVAL)
 
 
 def keyboard_loop():
-    """PowerShell 콘솔 입력을 직접 읽는다. 이동은 k를 누를 때까지 유지된다."""
-    global active_move_key, running
+    """한 번의 유효한 키 입력을 한 번의 목표 변경 pulse로 만든다."""
+    global active_move_key, command_until, running
 
     while running:
         c = msvcrt.getwch()
@@ -136,34 +127,49 @@ def keyboard_loop():
 
         c = c.lower()
         if c in MOVE_KEYS:
+            if ser is None:
+                print("[미연결] 연결 후 다시 입력하세요")
+                continue
+            if c in {"p", "n", "r"} and last_state not in {1, 3}:
+                print(f"[명령 거부] state={last_state}; READY(1) 또는 DONE(3)에서 입력하세요")
+                continue
+            if c == "z" and last_state == 2:
+                print("[명령 거부] 이동 중에는 z를 사용할 수 없습니다")
+                continue
             active_move_key = c
-            send_command(c)
-            print(f"[키 입력] {c} (이동 시작, k를 누르면 정지)")
+            command_until = time.monotonic() + COMMAND_PULSE_SECONDS
+            print(f"[명령] {c}")
         elif c in TOGGLE_KEYS:
-            send_command(c)
             print(f"[키 입력] {c} (1회 전송)")
         elif c == STOP_KEY:
-            active_move_key = None
-            send_command(STOP_KEY)
+            active_move_key = "k"
+            command_until = 0.0
             print("[키 입력] k (정지)")
 
 
 def main():
-    global running
+    global running, active_move_key, command_until
 
-    print("로봇 키보드 컨트롤러 시작 (USB 시리얼 모드)")
-    print(f"포트: {SERIAL_PORT} @ {BAUD_RATE}bps")
-    print("i/, 바퀴축 정/역 | j/l 선기어 정/역 | u/o 고정전환 정/역")
-    print("각 모터는 다음 명령 후에도 유지 / k 전체 정지 / ESC 종료")
+    print("Clutch-a bench: motor1/3 disabled; manually lock ring gear first.")
+    print("k STOP, wait >=0.3s at reference groove, z SET ZERO")
+    print("p next +20deg / n next -20deg / r ZERO; each key press changes one step")
+    print("state: 0 unreferenced, 1 ready, 2 moving, 3 done, 4 fault")
+    print("After fault: k, inspect/re-align reference, then z. No automatic retry.")
 
     threading.Thread(target=connection_manager, daemon=True).start()
     threading.Thread(target=repeat_sender, daemon=True).start()
     threading.Thread(target=status_receiver, daemon=True).start()
 
-    keyboard_loop()
-
-    running = False
-    send_command(STOP_KEY)
+    try:
+        keyboard_loop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        running = False
+        active_move_key = "k"
+        command_until = 0.0
+        time.sleep(REPEAT_INTERVAL + 0.05)
+        send_command(STOP_KEY)
     time.sleep(0.2)
     print("종료됨")
 

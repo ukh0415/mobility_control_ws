@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdlib.h>
+#include "carrier_test.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,6 +55,11 @@ uint8_t myAddress;
 uint8_t i2c_rx_buf[1];
 uint8_t i2c_tx_buf[8];
 volatile char lastCommand = 'k';
+volatile uint32_t command_received_ms = 0;
+volatile uint8_t command_link_error = 0;
+volatile uint8_t command_stop_pending = 0;
+CarrierTest carrier_test = {0}; /* Live Expressions: state/error/zero_count/target_count */
+static uint32_t control_tick_ms = 0;
 
 uint8_t currentMode = 0;
 int16_t carrierAngleTenths = 0;
@@ -114,33 +120,12 @@ void SetMotor(TIM_HandleTypeDef *htim, uint32_t channel,
 
 void ApplyCommand(char cmd)
 {
-  switch (cmd) {
-    case 'i':
-      SetMotor(&htim3, TIM_CHANNEL_1, GPIOA, GPIO_PIN_7, GPIOB, GPIO_PIN_0, 70);
-      break;
-    case ',':
-      SetMotor(&htim3, TIM_CHANNEL_1, GPIOA, GPIO_PIN_7, GPIOB, GPIO_PIN_0, -70);
-      break;
-    case 'j':
-      SetMotor(&htim1, TIM_CHANNEL_1, GPIOB, GPIO_PIN_1, GPIOB, GPIO_PIN_10, 70);
-      break;
-    case 'l':
-      SetMotor(&htim1, TIM_CHANNEL_1, GPIOB, GPIO_PIN_1, GPIOB, GPIO_PIN_10, -70);
-      break;
-    case 'u':
-      SetMotor(&htim2, TIM_CHANNEL_3, GPIOB, GPIO_PIN_8, GPIOB, GPIO_PIN_9, 60);
-      break;
-    case 'o':
-      SetMotor(&htim2, TIM_CHANNEL_3, GPIOB, GPIO_PIN_8, GPIOB, GPIO_PIN_9, -60);
-      break;
-    case 'k':
-      SetMotor(&htim3, TIM_CHANNEL_1, GPIOA, GPIO_PIN_7, GPIOB, GPIO_PIN_0, 0);
-      SetMotor(&htim1, TIM_CHANNEL_1, GPIOB, GPIO_PIN_1, GPIOB, GPIO_PIN_10, 0);
-      SetMotor(&htim2, TIM_CHANNEL_3, GPIOB, GPIO_PIN_8, GPIOB, GPIO_PIN_9, 0);
-      break;
-    default:
-      break;
-  }
+  /* Dedicated clutch-a bench build: motor1 and motor3 always disabled. */
+  (void)cmd;
+  SetMotor(&htim3, TIM_CHANNEL_1, GPIOA, GPIO_PIN_7, GPIOB, GPIO_PIN_0, 0);
+  SetMotor(&htim2, TIM_CHANNEL_3, GPIOB, GPIO_PIN_8, GPIOB, GPIO_PIN_9, 0);
+  SetMotor(&htim1, TIM_CHANNEL_1, GPIOB, GPIO_PIN_1, GPIOB, GPIO_PIN_10,
+           carrier_test.pwm_percent);
 }
 
 void PrepareStatusBuffer(void)
@@ -149,7 +134,7 @@ void PrepareStatusBuffer(void)
   i2c_tx_buf[0] = currentMode;
   i2c_tx_buf[1] = (uint8_t)(carrierAngleTenths & 0xFF);
   i2c_tx_buf[2] = (uint8_t)(((uint16_t)carrierAngleTenths >> 8) & 0xFFU);
-  i2c_tx_buf[3] = 2U; /* Diagnostic status protocol version. */
+  i2c_tx_buf[3] = 4U; /* Cumulative carrier-step test protocol version. */
   for (uint32_t i = 0; i < 4U; ++i) {
     i2c_tx_buf[4U + i] = (uint8_t)(motor2_snapshot >> (8U * i));
   }
@@ -170,7 +155,10 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
 void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
   lastCommand = (char)i2c_rx_buf[0];
-  ApplyCommand(lastCommand);
+  command_received_ms = HAL_GetTick();
+  if (lastCommand == 'k') command_stop_pending = 1;
+  if (lastCommand != 'k' && lastCommand != 'z' && lastCommand != 'p' &&
+      lastCommand != 'n' && lastCommand != 'r' && lastCommand != 'h') command_link_error = 1;
   HAL_I2C_EnableListen_IT(hi2c);
 }
 
@@ -181,6 +169,7 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
+  command_link_error = 1;
   HAL_I2C_DeInit(hi2c);
   HAL_I2C_Init(hi2c);
   HAL_I2C_EnableListen_IT(hi2c);
@@ -267,7 +256,31 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    carrierAngleTenths = (int16_t)(encoderCount % 32000);
+    uint32_t now = HAL_GetTick();
+    if (now - control_tick_ms >= 10U) {
+      control_tick_ms = now;
+      uint32_t primask = __get_PRIMASK();
+      __disable_irq();
+      char command = lastCommand;
+      uint32_t received = command_received_ms;
+      int32_t count = motor2_encoder_count;
+      int32_t wheel = encoderCount;
+      uint8_t link_error = command_link_error;
+      command_link_error = 0;
+      if (command_stop_pending) {
+        command = 'k';
+        command_stop_pending = 0;
+      }
+      __set_PRIMASK(primask);
+      CarrierTick(&carrier_test, now, count, wheel, command, received, link_error);
+      ApplyCommand(command);
+      /* Publish the pair atomically against I2C status interrupts. */
+      primask = __get_PRIMASK();
+      __disable_irq();
+      currentMode = carrier_test.state;
+      carrierAngleTenths = carrier_test.angle_tenths;
+      __set_PRIMASK(primask);
+    }
 
     if (hi2c1.State == HAL_I2C_STATE_READY)
     {

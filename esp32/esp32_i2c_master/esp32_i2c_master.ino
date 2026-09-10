@@ -13,12 +13,12 @@
     GND 공통
 
   상태 패킷 포맷 (STM32 1개당 8바이트, protocol/protocol.md):
-    byte3: version=2, byte4..7: motor2 count (int32 little-endian)
-    byte0        : mode        (0=바퀴모드, 1=계단1단계, 2=완전궤도모드)
+    byte3: version=4, byte4..7: motor2 count (int32 little-endian)
+    byte0        : state (0=UNREFERENCED,1=READY,2=MOVING,3=DONE,4=FAULT)
     byte1,byte2  : leg_angle   (int16, little-endian, 0.1도 단위 → 실제각도 = 값/10.0)
 
   노트북으로 보내는 상태 라인 포맷 (텍스트, 사람이 보기 쉽게):
-    STATUS,mode1,angle1,mode2,angle2,mode3,angle3,mode4,angle4\n
+    STATUS_A4,state1,angle1,...\n
 */
 
 #include <WiFi.h>
@@ -70,7 +70,7 @@ bool readStatusFromLeg(uint8_t addr, LegStatus &out, uint8_t &bytesReceived) {
   for (uint8_t i = 0; i < 4; ++i) {
     rawCount |= (uint32_t)(uint8_t)Wire.read() << (8U * i);
   }
-  if (version != 2) return false;
+  if (version != 4) return false;
   out.motor2_encoder_count = (rawCount <= INT32_MAX)
       ? (int32_t)rawCount : -1 - (int32_t)(UINT32_MAX - rawCount);
   return true;
@@ -81,7 +81,11 @@ void pollAllLegs(char cmd) {
     uint8_t writeErr = sendCommandToLeg(LEG_ADDR[i], cmd);
     delay(20);  // STM32가 수신 처리 후 송신 준비 상태로 돌아갈 시간 확보
     uint8_t bytesReceived = 0;
-    legs[i].ok = readStatusFromLeg(LEG_ADDR[i], legs[i], bytesReceived);
+    legs[i].ok = readStatusFromLeg(LEG_ADDR[i], legs[i], bytesReceived) && writeErr == 0;
+    if (!legs[i].ok) {
+      currentCmd = 'k';
+      sendCommandToLeg(LEG_ADDR[i], 'k');
+    }
 
     // 진단용: 주소 0x10(leg[0])만 상세 로그 출력
     if (i == 0) {
@@ -97,7 +101,7 @@ void pollAllLegs(char cmd) {
 
 void sendStatusToClient() {
   if (!(client && client.connected())) return;
-  String line = "STATUS";
+  String line = "STATUS_A4";
   for (int i = 0; i < ACTIVE_LEG_COUNT; i++) {
     line += ",";
     line += legs[i].ok ? String(legs[i].mode) : "NA";
@@ -117,9 +121,9 @@ void printStatusToSerial() {
     Serial.print(" ok=");
     Serial.print(legs[i].ok ? "true" : "false");
     if (legs[i].ok) {
-      Serial.print(" mode=");
+      Serial.print(" state=");
       Serial.print(legs[i].mode);
-      Serial.print(" angle=");
+      Serial.print(" carrier_deg=");
       Serial.print(legs[i].angle_tenths / 10.0, 1);
       Serial.print(" motor2_count=");
       Serial.print(legs[i].motor2_encoder_count);
@@ -157,13 +161,10 @@ void loop() {
     }
   }
 
-  // 노트북에서 온 명령 수신 (WiFi/TCP)
+  // Bench control is USB-only. TCP clients may observe status.
   if (client && client.connected() && client.available()) {
     while (client.available()) {
-      char c = client.read();
-      if (c == '\n' || c == '\r') continue;
-      currentCmd = c;
-      lastCommandTime = millis();
+      client.read();
     }
   }
 
