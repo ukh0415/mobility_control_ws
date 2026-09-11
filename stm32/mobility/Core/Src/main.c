@@ -53,16 +53,16 @@ CornerId cornerId;
 uint8_t myAddress;
 
 uint8_t i2c_rx_buf[1];
-uint8_t i2c_tx_buf[8];
+uint8_t i2c_tx_buf[9];
 volatile char lastCommand = 'k';
 volatile uint32_t command_received_ms = 0;
 volatile uint8_t command_link_error = 0;
 volatile uint8_t command_stop_pending = 0;
-CarrierTest carrier_test = {0}; /* Live Expressions: state/error/zero_count/target_count */
+CarrierTest carrier_test = {0}; /* Live: clutch_mode/state/error/target_step/target_count */
 static uint32_t control_tick_ms = 0;
 
-uint8_t currentMode = 0;
-int16_t carrierAngleTenths = 0;
+uint8_t currentState = 0;
+int16_t outputAngleTenths = 0;
 volatile int32_t encoderCount = 0;
 volatile int32_t motor2_encoder_count = 0; /* PB3 rising edges, x1 decoding. */
 
@@ -120,7 +120,7 @@ void SetMotor(TIM_HandleTypeDef *htim, uint32_t channel,
 
 void ApplyCommand(char cmd)
 {
-  /* Dedicated clutch-a bench build: motor1 and motor3 always disabled. */
+  /* Dedicated manual clutch A/B bench build: motor1 and motor3 always disabled. */
   (void)cmd;
   SetMotor(&htim3, TIM_CHANNEL_1, GPIOA, GPIO_PIN_7, GPIOB, GPIO_PIN_0, 0);
   SetMotor(&htim2, TIM_CHANNEL_3, GPIOB, GPIO_PIN_8, GPIOB, GPIO_PIN_9, 0);
@@ -131,12 +131,13 @@ void ApplyCommand(char cmd)
 void PrepareStatusBuffer(void)
 {
   uint32_t motor2_snapshot = (uint32_t)motor2_encoder_count;
-  i2c_tx_buf[0] = currentMode;
-  i2c_tx_buf[1] = (uint8_t)(carrierAngleTenths & 0xFF);
-  i2c_tx_buf[2] = (uint8_t)(((uint16_t)carrierAngleTenths >> 8) & 0xFFU);
-  i2c_tx_buf[3] = 4U; /* Cumulative carrier-step test protocol version. */
+  i2c_tx_buf[0] = currentState;
+  i2c_tx_buf[1] = (uint8_t)(outputAngleTenths & 0xFF);
+  i2c_tx_buf[2] = (uint8_t)(((uint16_t)outputAngleTenths >> 8) & 0xFFU);
+  i2c_tx_buf[3] = 5U; /* Manual clutch A/B step-test protocol version. */
+  i2c_tx_buf[4] = carrier_test.clutch_mode;
   for (uint32_t i = 0; i < 4U; ++i) {
-    i2c_tx_buf[4U + i] = (uint8_t)(motor2_snapshot >> (8U * i));
+    i2c_tx_buf[5U + i] = (uint8_t)(motor2_snapshot >> (8U * i));
   }
 }
 
@@ -157,7 +158,8 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
   lastCommand = (char)i2c_rx_buf[0];
   command_received_ms = HAL_GetTick();
   if (lastCommand == 'k') command_stop_pending = 1;
-  if (lastCommand != 'k' && lastCommand != 'z' && lastCommand != 'p' &&
+  if (lastCommand != 'k' && lastCommand != 'a' && lastCommand != 'b' &&
+      lastCommand != 'z' && lastCommand != 'p' &&
       lastCommand != 'n' && lastCommand != 'r' && lastCommand != 'h') command_link_error = 1;
   HAL_I2C_EnableListen_IT(hi2c);
 }
@@ -277,8 +279,8 @@ int main(void)
       /* Publish the pair atomically against I2C status interrupts. */
       primask = __get_PRIMASK();
       __disable_irq();
-      currentMode = carrier_test.state;
-      carrierAngleTenths = carrier_test.angle_tenths;
+      currentState = carrier_test.state;
+      outputAngleTenths = carrier_test.angle_tenths;
       __set_PRIMASK(primask);
     }
 
