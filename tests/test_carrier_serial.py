@@ -38,6 +38,8 @@ class ClientTests(unittest.TestCase):
     def test_reconnect_discards_previous_motion(self):
         client = load_client()
         client.active_move_key = "p"
+        client.last_motor3_pwm = 40
+        client.last_error = 9
         port = object()
         with patch.object(client, "connect", return_value=port), patch.object(
                 client.time, "sleep", lambda _: setattr(client, "running", False)):
@@ -46,6 +48,8 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client.active_move_key, "k")
         self.assertEqual(client.command_until, 0.0)
         self.assertIsNone(client.last_state)
+        self.assertIsNone(client.last_motor3_pwm)
+        self.assertIsNone(client.last_error)
 
     def test_ctrl_c_sends_stop(self):
         client = load_client()

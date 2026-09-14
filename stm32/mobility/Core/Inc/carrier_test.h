@@ -16,18 +16,24 @@
 #define CARRIER_MAX_ABS_STEPS 18
 #define CARRIER_MAX_ABS_COUNT 12100
 #define CARRIER_OBSERVATION_MODE 1 /* 1: coast after target crossing and record final error. */
+#define CLUTCH_JOG_PWM_PERCENT 40
+#define CLUTCH_JOG_DURATION_MS 250U
+#define CLUTCH_JOG_ENCODER_TOLERANCE 2
 #define MOTOR2_PWM_TO_COUNT_SIGN -1 /* Verified: positive PWM made PB3/PB5 count decrease. */
 enum { CT_UNREFERENCED, CT_READY, CT_MOVING, CT_DONE, CT_FAULT };
 enum { CE_NONE, CE_COMMAND, CE_LINK, CE_TIMEOUT, CE_STALL, CE_DIRECTION,
-       CE_WHEEL_MOVED, CE_RANGE, CE_DRIFT };
+       CE_WHEEL_MOVED, CE_RANGE, CE_DRIFT, CE_CLUTCH_INTERLOCK };
 enum { CLUTCH_NONE, CLUTCH_A, CLUTCH_B };
 typedef struct {
   uint8_t state, error, referenced, target_reached, clutch_mode;
+  int8_t clutch_jog_direction;
+  uint8_t clutch_jog_active;
   char previous_command;
   int32_t zero_count, target_count, previous_count, previous_wheel, start_count;
   int32_t progress_count;
-  uint32_t quiet_since, started_ms, progress_ms;
-  int16_t angle_tenths, pwm_percent, target_step;
+  int32_t clutch_start_motor2_count, clutch_start_wheel_count;
+  uint32_t quiet_since, started_ms, progress_ms, clutch_started_ms;
+  int16_t angle_tenths, pwm_percent, clutch_pwm_percent, target_step;
 } CarrierTest;
 
 static int CarrierTargetForStep(const CarrierTest *c, int32_t step, int32_t *target)
@@ -47,7 +53,9 @@ static int CarrierTargetForStep(const CarrierTest *c, int32_t step, int32_t *tar
 
 static void CarrierFault(CarrierTest *c, uint8_t error)
 {
-  c->state = CT_FAULT; c->error = error; c->referenced = 0; c->pwm_percent = 0;
+  c->state = CT_FAULT; c->error = error; c->referenced = 0;
+  c->pwm_percent = 0; c->clutch_pwm_percent = 0;
+  c->clutch_jog_active = 0; c->clutch_jog_direction = 0;
 }
 
 /* Called every 10ms with one coherent input snapshot. No HAL dependencies. */
@@ -57,11 +65,12 @@ static void CarrierTick(CarrierTest *c, uint32_t now, int32_t count,
   if (count != c->previous_count || wheel != c->previous_wheel) c->quiet_since = now;
   int wheel_changed = wheel != c->previous_wheel;
   c->previous_count = count; c->previous_wheel = wheel;
-  c->pwm_percent = 0;
+  c->pwm_percent = 0; c->clutch_pwm_percent = 0;
   if (link_error || now - received_ms > CARRIER_LINK_TIMEOUT_MS) {
     CarrierFault(c, CE_LINK); c->previous_command = 0; return;
   }
-  if (cmd != 'a' && cmd != 'b' && cmd != 'z' && cmd != 'p' &&
+  if (cmd != 'a' && cmd != 'b' && cmd != 'u' && cmd != 'o' &&
+      cmd != 'z' && cmd != 'p' &&
       cmd != 'n' && cmd != 'r' && cmd != 'k' && cmd != 'h') {
     CarrierFault(c, CE_COMMAND); c->previous_command = cmd; return;
   }
@@ -69,12 +78,24 @@ static void CarrierTick(CarrierTest *c, uint32_t now, int32_t count,
     char previous = c->previous_command;
     c->previous_command = cmd;
     if (cmd == 'k') {
+      c->clutch_jog_active = 0; c->clutch_jog_direction = 0;
       if (c->state == CT_MOVING) c->referenced = 0;
       if (c->state != CT_FAULT) c->state = c->referenced ? CT_READY : CT_UNREFERENCED;
     } else if (cmd == 'h') {
       /* Heartbeat only: keep the current target and state. */
+    } else if (cmd == 'u' || cmd == 'o') {
+      if (c->state == CT_MOVING || c->clutch_jog_active ||
+          (c->state == CT_FAULT && previous != 'k') ||
+          now - c->quiet_since < CARRIER_SETTLE_MS) {
+        CarrierFault(c, CE_COMMAND); return;
+      }
+      c->referenced = 0; c->target_reached = 0; c->target_step = 0;
+      c->clutch_mode = CLUTCH_NONE; c->state = CT_UNREFERENCED; c->error = CE_NONE;
+      c->clutch_jog_direction = cmd == 'u' ? 1 : -1;
+      c->clutch_jog_active = 1; c->clutch_started_ms = now;
+      c->clutch_start_motor2_count = count; c->clutch_start_wheel_count = wheel;
     } else if (cmd == 'a' || cmd == 'b') {
-      if (c->state == CT_MOVING || previous != 'k' ||
+      if (c->state == CT_MOVING || c->clutch_jog_active || previous != 'k' ||
           now - c->quiet_since < CARRIER_SETTLE_MS) {
         CarrierFault(c, CE_COMMAND); return;
       }
@@ -83,7 +104,8 @@ static void CarrierTick(CarrierTest *c, uint32_t now, int32_t count,
       c->zero_count = count; c->target_count = count;
       c->state = CT_UNREFERENCED; c->error = CE_NONE;
     } else if (cmd == 'z') {
-      if (c->state == CT_MOVING || c->clutch_mode == CLUTCH_NONE ||
+      if (c->state == CT_MOVING || c->clutch_jog_active ||
+          c->clutch_mode == CLUTCH_NONE ||
           now - c->quiet_since < CARRIER_SETTLE_MS) {
         CarrierFault(c, CE_COMMAND); return;
       }
@@ -115,6 +137,21 @@ static void CarrierTick(CarrierTest *c, uint32_t now, int32_t count,
         ? (int16_t)(-delta * 225 / 601)
         : (int16_t)(delta * 180 / 601);
   } else c->angle_tenths = 0;
+  if (c->clutch_jog_active) {
+    if (llabs((int64_t)count - c->clutch_start_motor2_count) >
+            CLUTCH_JOG_ENCODER_TOLERANCE ||
+        llabs((int64_t)wheel - c->clutch_start_wheel_count) >
+            CLUTCH_JOG_ENCODER_TOLERANCE) {
+      CarrierFault(c, CE_CLUTCH_INTERLOCK); return;
+    }
+    if (now - c->clutch_started_ms >= CLUTCH_JOG_DURATION_MS) {
+      c->clutch_jog_active = 0; c->clutch_jog_direction = 0;
+    } else {
+      c->clutch_pwm_percent = (int16_t)(c->clutch_jog_direction *
+                                        CLUTCH_JOG_PWM_PERCENT);
+    }
+    return;
+  }
 #if !CARRIER_OBSERVATION_MODE
   if (c->state == CT_DONE && llabs((int64_t)c->target_count - count) > CARRIER_COUNT_TOLERANCE) {
     CarrierFault(c, CE_DRIFT); return;

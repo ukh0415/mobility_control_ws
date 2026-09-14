@@ -1,5 +1,5 @@
-"""Manual clutch A/B 20-degree bench trial using a compact key layout.
-Motor1/3 disabled. Every manual clutch change requires a new reference.
+"""Motor2 position and motor3 clutch-jog bench trial.
+Motor1 is disabled. Every clutch jog requires a new mode/reference.
 """
 
 import msvcrt
@@ -16,7 +16,7 @@ REPEAT_INTERVAL = 0.1        # 이동 명령 재전송 주기(초)
 RECONNECT_INTERVAL = 1.0     # 연결 끊겼을 때 재시도 주기(초)
 COMMAND_PULSE_SECONDS = 0.3  # ESP32의 100ms polling에서 여러 번 보이도록 유지
 
-PULSE_COMMANDS = {"a", "b", "z", "p", "n", "r"}
+PULSE_COMMANDS = {"a", "b", "u", "o", "z", "p", "n", "r"}
 STOP_KEY = "k"
 EXTENDED_KEY_COMMANDS = {
     "K": "n",  # left arrow
@@ -24,10 +24,15 @@ EXTENDED_KEY_COMMANDS = {
     "H": "z",  # up arrow: set current groove as zero
     "P": "r",  # down arrow: return to zero
 }
-LEGACY_KEY_COMMANDS = {"p": "p", "n": "n", "z": "z", "r": "r", "k": "k"}
+LEGACY_KEY_COMMANDS = {
+    "a": "u", "b": "o",  # motor3 jog toward clutch A/B (initial direction assumption)
+    "p": "p", "n": "n", "z": "z", "r": "r", "k": "k",
+}
 COMMAND_LABELS = {
     "a": "클러치 A 선택(링 고정, 캐리어 15:1)",
     "b": "클러치 B 선택(캐리어 고정, 링 12:1)",
+    "u": "모터3 A 방향 조그(40%, 최대 250ms)",
+    "o": "모터3 B 방향 조그(40%, 최대 250ms)",
     "p": "+20도",
     "n": "-20도",
     "z": "현재 홈을 0도로 설정",
@@ -42,6 +47,8 @@ active_move_key = "k"
 command_until = 0.0
 stop_since = time.monotonic()
 last_state = None
+last_motor3_pwm = None
+last_error = None
 running = True
 
 def connect():
@@ -76,7 +83,8 @@ def send_command(cmd: str):
 
 def connection_manager():
     """백그라운드에서 연결이 끊기면 계속 재연결을 시도."""
-    global ser, active_move_key, command_until, stop_since, last_state
+    global ser, active_move_key, command_until, stop_since
+    global last_state, last_motor3_pwm, last_error
     while running:
         with ser_lock:
             need_connect = ser is None
@@ -87,13 +95,15 @@ def connection_manager():
                 command_until = 0.0
                 stop_since = time.monotonic()
                 last_state = None
+                last_motor3_pwm = None
+                last_error = None
                 ser = new_ser
         time.sleep(RECONNECT_INTERVAL)
 
 
 def status_receiver():
     """ESP32가 시리얼로 보내는 상태/디버그 줄을 그대로 화면에 출력."""
-    global last_state
+    global last_state, last_motor3_pwm, last_error
     while running:
         with ser_lock:
             s = ser
@@ -111,6 +121,12 @@ def status_receiver():
                 match = re.search(r"\bstate=(\d+)\b", text)
                 if match:
                     last_state = int(match.group(1))
+                match = re.search(r"\bmotor3_pwm=(-?\d+)\b", text)
+                if match:
+                    last_motor3_pwm = int(match.group(1))
+                match = re.search(r"\berror=(\d+)\b", text)
+                if match:
+                    last_error = int(match.group(1))
                 print(text)
             except UnicodeDecodeError:
                 pass
@@ -164,6 +180,17 @@ def keyboard_loop():
                 if last_state == 2:
                     print("[모드 선택 거부] 모터2가 이동 중입니다")
                     continue
+            if command in {"u", "o"}:
+                if last_state not in {0, 1, 3, 4}:
+                    print(f"[모터3 거부] state={last_state}; 모터2 정지 상태를 확인하세요")
+                    continue
+                if last_state == 4 and (active_move_key != STOP_KEY or
+                                        time.monotonic() - stop_since < 0.3):
+                    print("[모터3 거부] fault 원인 확인 후 Space로 정지하고 0.3초 기다리세요")
+                    continue
+                if last_motor3_pwm != 0:
+                    print(f"[모터3 거부] motor3_pwm={last_motor3_pwm}; 자동 정지를 기다리세요")
+                    continue
             if command in {"p", "n", "r"} and last_state not in {1, 3}:
                 print(f"[명령 거부] state={last_state}; READY(1) 또는 DONE(3)에서 입력하세요")
                 continue
@@ -184,12 +211,14 @@ def keyboard_loop():
 def main():
     global running, active_move_key, command_until
 
-    print("수동 클러치 A/B 20도 시험: 모터1/3은 비활성화됩니다.")
+    print("모터2 위치 + 모터3 클러치 조그 시험: 모터1은 비활성화됩니다.")
+    print("A=모터3 A방향 조그 | B=모터3 B방향 조그 | Space=전체 정지")
+    print("모터3은 키 1회당 40% PWM으로 최대 250ms만 움직입니다.")
     print("1=A(링 고정/캐리어 15:1), 2=B(캐리어 고정/링 12:1)")
     print("← -20도 | → +20도 | ↑ 현재 홈=0도 | ↓ 0도 복귀 | Space 정지")
-    print("모드 변경: Space → 손으로 클러치 변경 → 1/2 → ↑")
+    print("클러치 조그 후: Space → 1/2 계산 모드 선택 → 기준 홈에서 ↑")
     print("state: 0 unreferenced, 1 ready, 2 moving, 3 done, 4 fault")
-    print("fault 발생 시 Space → 원인 확인/홈 재정렬 → 1/2 → ↑ 순서로 복구하세요.")
+    print("fault 발생 시 Space → 원인 확인 → 1/2 → 홈 재정렬 → ↑ 순서로 복구하세요.")
 
     threading.Thread(target=connection_manager, daemon=True).start()
     threading.Thread(target=repeat_sender, daemon=True).start()

@@ -12,13 +12,14 @@
     ESP32 GPIO22 (SCL) -> 4개 STM32 SCL 핀 전부 병렬 연결 (버스에 4.7kΩ 풀업 1개)
     GND 공통
 
-  상태 패킷 포맷 (STM32 1개당 9바이트, protocol/protocol.md):
-    byte3: version=5, byte4: clutch mode, byte5..8: motor2 count
+  상태 패킷 포맷 (STM32 1개당 11바이트, protocol/protocol.md):
+    byte3: version=6, byte4: clutch mode, byte5: motor3 PWM, byte6: error
+    byte7..10: motor2 count
     byte0        : state (0=UNREFERENCED,1=READY,2=MOVING,3=DONE,4=FAULT)
     byte1,byte2  : selected output angle (int16 little-endian, 0.1도)
 
   노트북으로 보내는 상태 라인 포맷 (텍스트, 사람이 보기 쉽게):
-    STATUS_AB5,state1,clutch1,angle1,...\n
+    STATUS_M36,state1,clutch1,angle1,motor3_pwm1,error1,...\n
 */
 
 #include <WiFi.h>
@@ -46,6 +47,8 @@ struct LegStatus {
   uint8_t state;
   int16_t output_angle_tenths;  // 0.1도 단위
   uint8_t clutch_mode;           // 0=미선택, 1=A, 2=B
+  int8_t motor3_pwm_percent;
+  uint8_t error;
   int32_t motor2_encoder_count;
   bool ok;                // 이번 사이클에 정상 응답했는지
   uint8_t write_error;     // 마지막 I2C 쓰기 결과, 0=성공
@@ -56,6 +59,8 @@ bool statusLogInitialized[4] = {false, false, false, false};
 bool lastLoggedOk[4] = {false, false, false, false};
 uint8_t lastLoggedState[4] = {0, 0, 0, 0};
 uint8_t lastLoggedClutch[4] = {0, 0, 0, 0};
+int8_t lastLoggedMotor3Pwm[4] = {0, 0, 0, 0};
+uint8_t lastLoggedError[4] = {0, 0, 0, 0};
 unsigned long lastProgressLogTime[4] = {0, 0, 0, 0};
 
 uint8_t sendCommandToLeg(uint8_t addr, char cmd) {
@@ -65,8 +70,8 @@ uint8_t sendCommandToLeg(uint8_t addr, char cmd) {
 }
 
 bool readStatusFromLeg(uint8_t addr, LegStatus &out, uint8_t &bytesReceived) {
-  bytesReceived = Wire.requestFrom((int)addr, 9);
-  if (bytesReceived != 9) {
+  bytesReceived = Wire.requestFrom((int)addr, 11);
+  if (bytesReceived != 11) {
     while (Wire.available()) Wire.read();
     return false;
   }
@@ -76,11 +81,13 @@ bool readStatusFromLeg(uint8_t addr, LegStatus &out, uint8_t &bytesReceived) {
   out.output_angle_tenths = (int16_t)((hi << 8) | lo);
   uint8_t version = Wire.read();
   out.clutch_mode = Wire.read();
+  out.motor3_pwm_percent = (int8_t)Wire.read();
+  out.error = Wire.read();
   uint32_t rawCount = 0;
   for (uint8_t i = 0; i < 4; ++i) {
     rawCount |= (uint32_t)(uint8_t)Wire.read() << (8U * i);
   }
-  if (version != 5) return false;
+  if (version != 6) return false;
   out.motor2_encoder_count = (rawCount <= INT32_MAX)
       ? (int32_t)rawCount : -1 - (int32_t)(UINT32_MAX - rawCount);
   return true;
@@ -103,7 +110,7 @@ void pollAllLegs(char cmd) {
 
 void sendStatusToClient() {
   if (!(client && client.connected())) return;
-  String line = "STATUS_AB5";
+  String line = "STATUS_M36";
   for (int i = 0; i < ACTIVE_LEG_COUNT; i++) {
     line += ",";
     line += legs[i].ok ? String(legs[i].state) : "NA";
@@ -111,6 +118,10 @@ void sendStatusToClient() {
     line += legs[i].ok ? String(legs[i].clutch_mode) : "NA";
     line += ",";
     line += legs[i].ok ? String(legs[i].output_angle_tenths / 10.0, 1) : "NA";
+    line += ",";
+    line += legs[i].ok ? String(legs[i].motor3_pwm_percent) : "NA";
+    line += ",";
+    line += legs[i].ok ? String(legs[i].error) : "NA";
   }
   line += "\n";
   client.print(line);
@@ -123,7 +134,9 @@ void printStatusToSerialIfNeeded() {
     bool statusChanged = !statusLogInitialized[i] ||
         legs[i].ok != lastLoggedOk[i] ||
         (legs[i].ok && (legs[i].state != lastLoggedState[i] ||
-                        legs[i].clutch_mode != lastLoggedClutch[i]));
+                        legs[i].clutch_mode != lastLoggedClutch[i] ||
+                        legs[i].motor3_pwm_percent != lastLoggedMotor3Pwm[i] ||
+                        legs[i].error != lastLoggedError[i]));
     bool progressDue = legs[i].ok && legs[i].state == 2 &&
         STATUS_PROGRESS_LOG_MS > 0 &&
         now - lastProgressLogTime[i] >= STATUS_PROGRESS_LOG_MS;
@@ -145,6 +158,10 @@ void printStatusToSerialIfNeeded() {
       Serial.print(legs[i].clutch_mode == 1 ? "A" : legs[i].clutch_mode == 2 ? "B" : "NONE");
       Serial.print(" output_deg=");
       Serial.print(legs[i].output_angle_tenths / 10.0, 1);
+      Serial.print(" motor3_pwm=");
+      Serial.print(legs[i].motor3_pwm_percent);
+      Serial.print(" error=");
+      Serial.print(legs[i].error);
       Serial.print(" motor2_count=");
       Serial.print(legs[i].motor2_encoder_count);
     } else {
@@ -158,6 +175,8 @@ void printStatusToSerialIfNeeded() {
     lastLoggedOk[i] = legs[i].ok;
     lastLoggedState[i] = legs[i].state;
     lastLoggedClutch[i] = legs[i].clutch_mode;
+    lastLoggedMotor3Pwm[i] = legs[i].motor3_pwm_percent;
+    lastLoggedError[i] = legs[i].error;
     if (legs[i].ok && legs[i].state == 2) lastProgressLogTime[i] = now;
   }
   Serial.println();

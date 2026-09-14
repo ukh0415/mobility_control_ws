@@ -53,12 +53,12 @@ CornerId cornerId;
 uint8_t myAddress;
 
 uint8_t i2c_rx_buf[1];
-uint8_t i2c_tx_buf[9];
+uint8_t i2c_tx_buf[11];
 volatile char lastCommand = 'k';
 volatile uint32_t command_received_ms = 0;
 volatile uint8_t command_link_error = 0;
 volatile uint8_t command_stop_pending = 0;
-CarrierTest carrier_test = {0}; /* Live: clutch_mode/state/error/target_step/target_count */
+CarrierTest carrier_test = {0}; /* Live: state/error/clutch_mode/clutch_pwm_percent */
 static uint32_t control_tick_ms = 0;
 
 uint8_t currentState = 0;
@@ -120,10 +120,11 @@ void SetMotor(TIM_HandleTypeDef *htim, uint32_t channel,
 
 void ApplyCommand(char cmd)
 {
-  /* Dedicated manual clutch A/B bench build: motor1 and motor3 always disabled. */
+  /* Bench build: motor1 disabled; motor2 and motor3 are mutually interlocked. */
   (void)cmd;
   SetMotor(&htim3, TIM_CHANNEL_1, GPIOA, GPIO_PIN_7, GPIOB, GPIO_PIN_0, 0);
-  SetMotor(&htim2, TIM_CHANNEL_3, GPIOB, GPIO_PIN_8, GPIOB, GPIO_PIN_9, 0);
+  SetMotor(&htim2, TIM_CHANNEL_3, GPIOB, GPIO_PIN_8, GPIOB, GPIO_PIN_9,
+           carrier_test.clutch_pwm_percent);
   SetMotor(&htim1, TIM_CHANNEL_1, GPIOB, GPIO_PIN_1, GPIOB, GPIO_PIN_10,
            carrier_test.pwm_percent);
 }
@@ -134,10 +135,12 @@ void PrepareStatusBuffer(void)
   i2c_tx_buf[0] = currentState;
   i2c_tx_buf[1] = (uint8_t)(outputAngleTenths & 0xFF);
   i2c_tx_buf[2] = (uint8_t)(((uint16_t)outputAngleTenths >> 8) & 0xFFU);
-  i2c_tx_buf[3] = 5U; /* Manual clutch A/B step-test protocol version. */
+  i2c_tx_buf[3] = 6U; /* Motor3 jog + manual clutch A/B test protocol version. */
   i2c_tx_buf[4] = carrier_test.clutch_mode;
+  i2c_tx_buf[5] = (uint8_t)(int8_t)carrier_test.clutch_pwm_percent;
+  i2c_tx_buf[6] = carrier_test.error;
   for (uint32_t i = 0; i < 4U; ++i) {
-    i2c_tx_buf[5U + i] = (uint8_t)(motor2_snapshot >> (8U * i));
+    i2c_tx_buf[7U + i] = (uint8_t)(motor2_snapshot >> (8U * i));
   }
 }
 
@@ -159,6 +162,7 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
   command_received_ms = HAL_GetTick();
   if (lastCommand == 'k') command_stop_pending = 1;
   if (lastCommand != 'k' && lastCommand != 'a' && lastCommand != 'b' &&
+      lastCommand != 'u' && lastCommand != 'o' &&
       lastCommand != 'z' && lastCommand != 'p' &&
       lastCommand != 'n' && lastCommand != 'r' && lastCommand != 'h') command_link_error = 1;
   HAL_I2C_EnableListen_IT(hi2c);
