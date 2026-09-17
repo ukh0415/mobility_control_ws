@@ -1,8 +1,51 @@
 # 공용 제어 프로토콜
 
-상태: `0.6.0-draft`
+상태: `0.7.0-draft`
 
-## 현재 구현: 모터3 수동 클러치 조그 시험 (버전 6)
+## 현재 구현: 모터2 위치 튜닝 UI 텔레메트리 (버전 7)
+
+모터2의 목표 count, 실제 count, 출력 PWM과 정지 오차를 PC UI에서 100ms마다 시각화한다.
+모터3 수동 클러치 조그와 기존 버튼 명령은 버전 6 동작을 유지한다.
+
+STM32 상태 응답은 18바이트 little-endian이다.
+
+| 바이트 | 형식 | 의미 |
+|---|---|---|
+| 0 | uint8 | state: 0=UNREFERENCED, 1=READY, 2=MOVING, 3=DONE, 4=FAULT |
+| 1–2 | int16 LE | 선택 출력축 상대각, 0.1도 단위 |
+| 3 | uint8 | wire version 7 |
+| 4 | uint8 | clutch calculation mode: 0=미선택, 1=A, 2=B |
+| 5 | int8 | motor3 PWM%, 양수=A 방향, 음수=B 방향 |
+| 6 | uint8 | local CE error code |
+| 7–10 | int32 LE | motor2 실제 encoder count |
+| 11–14 | int32 LE | motor2 목표 encoder count |
+| 15 | int8 | motor2 현재 PWM% |
+| 16–17 | int16 LE | 기준 홈으로부터 목표 20도 칸 번호 |
+
+ESP32는 STM32 상태를 100ms마다 읽는다. PC UI가 USB 시리얼로 `v`를 보내면 ESP32 내부에서
+텔레메트리 출력을 켜고 이 문자를 STM32 모터 명령으로 전달하지 않는다. `V`는 텔레메트리를
+끈다. 모터 명령과 heartbeat는 텔레메트리 활성 여부와 관계없이 기존 주기로 계속 전달한다.
+
+정상 텔레메트리 한 줄은 다음 CSV 형식이다.
+
+```text
+TELEM_M37,esp_ms,1,state,clutch,angle_tenths,motor3_pwm,error,motor2_count,target_count,motor2_pwm,target_step
+```
+
+I2C 응답 실패 시에는 다음 형식을 사용한다.
+
+```text
+TELEM_M37,esp_ms,0,write_error,bytes_received
+```
+
+사람용 USB 로그와 TCP 상태 접두사는 `STATUS_M37`을 사용한다. 안정 상태의 사람용 로그는
+2초마다 한 줄, 상태 변화 시 즉시, MOVING 진행 상태는 1초마다 출력한다. `TELEM_M37`은 UI가
+활성화한 동안에만 100ms마다 출력하므로 평소 터미널 로그 빈도에는 영향을 주지 않는다.
+
+현재 시험값은 모터2 고정 70%, 모터3 45%와 400ms 조그다. UI에서 헤더 상수를 저장해도
+실행 중인 MCU 설정은 바뀌지 않으며 STM32를 다시 Build/Flash해야 적용된다.
+
+## 이전 구현: 모터3 수동 클러치 조그 시험 (버전 6)
 
 클러치 위치 센서가 없는 단계에서 모터3의 방향과 실제 이동량을 확인하기 위한 시험 기능이다.
 한 번의 키 입력은 짧은 조그 한 번만 만들며, 클러치 A/B 체결 완료를 자동 판정하지 않는다.
@@ -13,7 +56,7 @@
 | `B` | `o` | 모터3을 B 방향 초기 가정으로 40% PWM, 최대 250ms 구동 |
 | `Space` | `k` | 모터1·2·3 즉시 정지 |
 
-- A/B 방향은 배선과 기구에서 아직 실기 확인되지 않은 초기 가정이다.
+- 당시 A/B 방향은 배선과 기구에서 실기 확인되지 않은 초기 가정이었다.
 - 모터2가 MOVING이거나 모터1/2 엔코더가 정지하지 않은 경우 모터3 조그를 거부한다.
 - 모터3 조그 중 모터1 또는 모터2 엔코더가 허용 범위를 벗어나 움직이면 모든 모터를 정지하고 fault로 전환한다.
 - 조그 시작과 동시에 이전 클러치 계산 모드와 위치 기준을 무효화한다.
@@ -33,6 +76,8 @@
 | 7–10 | motor2 encoder count, int32 little-endian |
 
 ESP32 USB 로그와 TCP 접두사는 `STATUS_M36`을 사용한다. PC/ESP32/STM32를 함께 갱신한다.
+I2C 상태 읽기는 100ms 주기를 유지한다. USB 로그는 상태 변화 때 즉시 출력하고, 정지 상태가
+계속돼도 재연결한 PC가 현재 값을 받을 수 있도록 2000ms마다 한 번 다시 출력한다.
 
 ## 이전 구현: 수동 클러치 A/B 20도 시험 (버전 5)
 

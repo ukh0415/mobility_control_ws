@@ -16,8 +16,8 @@
 #define CARRIER_MAX_ABS_STEPS 18
 #define CARRIER_MAX_ABS_COUNT 12100
 #define CARRIER_OBSERVATION_MODE 1 /* 1: coast after target crossing and record final error. */
-#define CLUTCH_JOG_PWM_PERCENT 40
-#define CLUTCH_JOG_DURATION_MS 250U
+#define CLUTCH_JOG_PWM_PERCENT 45
+#define CLUTCH_JOG_DURATION_MS 450U
 #define CLUTCH_JOG_ENCODER_TOLERANCE 2
 #define MOTOR2_PWM_TO_COUNT_SIGN -1 /* Verified: positive PWM made PB3/PB5 count decrease. */
 enum { CT_UNREFERENCED, CT_READY, CT_MOVING, CT_DONE, CT_FAULT };
@@ -120,6 +120,17 @@ static void CarrierTick(CarrierTest *c, uint32_t now, int32_t count,
                           cmd == 'n' ? (int32_t)c->target_step - 1 : 0;
       int32_t target;
       if (!CarrierTargetForStep(c, next_step, &target)) { CarrierFault(c, CE_RANGE); return; }
+      if (cmd == 'p' || cmd == 'n') {
+        int expected_count_direction = c->clutch_mode == CLUTCH_A ? 1 : -1;
+        if (cmd == 'n') expected_count_direction = -expected_count_direction;
+        int64_t remaining = (int64_t)target - count;
+        if (remaining != 0 &&
+            (remaining > 0 ? 1 : -1) != expected_count_direction) {
+          /* Overshoot has put the next logical home behind the mechanism.
+           * Never reverse a p/n command implicitly; stop and require re-reference. */
+          CarrierFault(c, CE_DIRECTION); return;
+        }
+      }
       c->target_step = (int16_t)next_step;
       c->target_count = target; c->start_count = count;
       c->target_reached = 0;

@@ -12,14 +12,15 @@
     ESP32 GPIO22 (SCL) -> 4개 STM32 SCL 핀 전부 병렬 연결 (버스에 4.7kΩ 풀업 1개)
     GND 공통
 
-  상태 패킷 포맷 (STM32 1개당 11바이트, protocol/protocol.md):
-    byte3: version=6, byte4: clutch mode, byte5: motor3 PWM, byte6: error
-    byte7..10: motor2 count
+  상태 패킷 포맷 (STM32 1개당 18바이트, protocol/protocol.md):
+    byte3: version=7, byte4: clutch mode, byte5: motor3 PWM, byte6: error
+    byte7..10: motor2 count, byte11..14: target count
+    byte15: motor2 PWM, byte16..17: target step
     byte0        : state (0=UNREFERENCED,1=READY,2=MOVING,3=DONE,4=FAULT)
     byte1,byte2  : selected output angle (int16 little-endian, 0.1도)
 
   노트북으로 보내는 상태 라인 포맷 (텍스트, 사람이 보기 쉽게):
-    STATUS_M36,state1,clutch1,angle1,motor3_pwm1,error1,...\n
+    STATUS_M37,state1,clutch1,angle1,motor3_pwm1,error1,...\n
 */
 
 #include <WiFi.h>
@@ -41,7 +42,12 @@ const uint8_t LEG_ADDR[4] = {0x10, 0x11, 0x12, 0x13};  // 좌전,우전,좌후,�
 const uint8_t ACTIVE_LEG_COUNT = 1;  // 현재는 leg[0](0x10) 한 다리만 테스트
 const unsigned long POLL_INTERVAL_MS = 100;  // 한 다리 진단 중에는 10Hz로 여유 확보
 const unsigned long STATUS_PROGRESS_LOG_MS = 1000;  // 0이면 이동 중 주기 로그도 끔
+const unsigned long STATUS_REFRESH_LOG_MS = 2000;  // 재연결한 PC가 안정 상태를 받을 수 있게 저속 재출력
+const uint8_t STATUS_RESPONSE_SIZE = 18;
+const uint8_t STATUS_VERSION = 7;
 unsigned long lastPollTime = 0;
+unsigned long lastStatusLogTime = 0;
+bool telemetryStreaming = false;
 
 struct LegStatus {
   uint8_t state;
@@ -50,6 +56,9 @@ struct LegStatus {
   int8_t motor3_pwm_percent;
   uint8_t error;
   int32_t motor2_encoder_count;
+  int32_t target_count;
+  int8_t motor2_pwm_percent;
+  int16_t target_step;
   bool ok;                // 이번 사이클에 정상 응답했는지
   uint8_t write_error;     // 마지막 I2C 쓰기 결과, 0=성공
   uint8_t bytes_received;  // 마지막 상태 응답 길이
@@ -70,8 +79,8 @@ uint8_t sendCommandToLeg(uint8_t addr, char cmd) {
 }
 
 bool readStatusFromLeg(uint8_t addr, LegStatus &out, uint8_t &bytesReceived) {
-  bytesReceived = Wire.requestFrom((int)addr, 11);
-  if (bytesReceived != 11) {
+  bytesReceived = Wire.requestFrom((int)addr, (int)STATUS_RESPONSE_SIZE);
+  if (bytesReceived != STATUS_RESPONSE_SIZE) {
     while (Wire.available()) Wire.read();
     return false;
   }
@@ -87,9 +96,19 @@ bool readStatusFromLeg(uint8_t addr, LegStatus &out, uint8_t &bytesReceived) {
   for (uint8_t i = 0; i < 4; ++i) {
     rawCount |= (uint32_t)(uint8_t)Wire.read() << (8U * i);
   }
-  if (version != 6) return false;
+  uint32_t rawTarget = 0;
+  for (uint8_t i = 0; i < 4; ++i) {
+    rawTarget |= (uint32_t)(uint8_t)Wire.read() << (8U * i);
+  }
+  out.motor2_pwm_percent = (int8_t)Wire.read();
+  uint8_t stepLo = Wire.read();
+  uint8_t stepHi = Wire.read();
+  out.target_step = (int16_t)(((uint16_t)stepHi << 8) | stepLo);
+  if (version != STATUS_VERSION) return false;
   out.motor2_encoder_count = (rawCount <= INT32_MAX)
       ? (int32_t)rawCount : -1 - (int32_t)(UINT32_MAX - rawCount);
+  out.target_count = (rawTarget <= INT32_MAX)
+      ? (int32_t)rawTarget : -1 - (int32_t)(UINT32_MAX - rawTarget);
   return true;
 }
 
@@ -110,7 +129,7 @@ void pollAllLegs(char cmd) {
 
 void sendStatusToClient() {
   if (!(client && client.connected())) return;
-  String line = "STATUS_M36";
+  String line = "STATUS_M37";
   for (int i = 0; i < ACTIVE_LEG_COUNT; i++) {
     line += ",";
     line += legs[i].ok ? String(legs[i].state) : "NA";
@@ -122,6 +141,14 @@ void sendStatusToClient() {
     line += legs[i].ok ? String(legs[i].motor3_pwm_percent) : "NA";
     line += ",";
     line += legs[i].ok ? String(legs[i].error) : "NA";
+    line += ",";
+    line += legs[i].ok ? String(legs[i].motor2_encoder_count) : "NA";
+    line += ",";
+    line += legs[i].ok ? String(legs[i].target_count) : "NA";
+    line += ",";
+    line += legs[i].ok ? String(legs[i].motor2_pwm_percent) : "NA";
+    line += ",";
+    line += legs[i].ok ? String(legs[i].target_step) : "NA";
   }
   line += "\n";
   client.print(line);
@@ -129,7 +156,8 @@ void sendStatusToClient() {
 
 void printStatusToSerialIfNeeded() {
   unsigned long now = millis();
-  bool shouldPrint = false;
+  bool shouldPrint = STATUS_REFRESH_LOG_MS > 0 &&
+      now - lastStatusLogTime >= STATUS_REFRESH_LOG_MS;
   for (int i = 0; i < ACTIVE_LEG_COUNT; i++) {
     bool statusChanged = !statusLogInitialized[i] ||
         legs[i].ok != lastLoggedOk[i] ||
@@ -159,11 +187,17 @@ void printStatusToSerialIfNeeded() {
       Serial.print(" output_deg=");
       Serial.print(legs[i].output_angle_tenths / 10.0, 1);
       Serial.print(" motor3_pwm=");
-      Serial.print(legs[i].motor3_pwm_percent);
+      Serial.print((int)legs[i].motor3_pwm_percent);
       Serial.print(" error=");
       Serial.print(legs[i].error);
       Serial.print(" motor2_count=");
       Serial.print(legs[i].motor2_encoder_count);
+      Serial.print(" target_count=");
+      Serial.print(legs[i].target_count);
+      Serial.print(" motor2_pwm=");
+      Serial.print((int)legs[i].motor2_pwm_percent);
+      Serial.print(" target_step=");
+      Serial.print(legs[i].target_step);
     } else {
       Serial.print(" writeErr=");
       Serial.print(legs[i].write_error);
@@ -180,6 +214,32 @@ void printStatusToSerialIfNeeded() {
     if (legs[i].ok && legs[i].state == 2) lastProgressLogTime[i] = now;
   }
   Serial.println();
+  lastStatusLogTime = now;
+}
+
+void printTelemetryToSerial() {
+  if (!telemetryStreaming) return;
+  for (int i = 0; i < ACTIVE_LEG_COUNT; i++) {
+    Serial.print("TELEM_M37,");
+    Serial.print(millis());
+    Serial.print(",");
+    Serial.print(legs[i].ok ? 1 : 0);
+    if (legs[i].ok) {
+      Serial.print(","); Serial.print(legs[i].state);
+      Serial.print(","); Serial.print(legs[i].clutch_mode);
+      Serial.print(","); Serial.print(legs[i].output_angle_tenths);
+      Serial.print(","); Serial.print((int)legs[i].motor3_pwm_percent);
+      Serial.print(","); Serial.print(legs[i].error);
+      Serial.print(","); Serial.print(legs[i].motor2_encoder_count);
+      Serial.print(","); Serial.print(legs[i].target_count);
+      Serial.print(","); Serial.print((int)legs[i].motor2_pwm_percent);
+      Serial.print(","); Serial.print(legs[i].target_step);
+    } else {
+      Serial.print(","); Serial.print(legs[i].write_error);
+      Serial.print(","); Serial.print(legs[i].bytes_received);
+    }
+    Serial.println();
+  }
 }
 
 void setup() {
@@ -222,6 +282,14 @@ void loop() {
     while (Serial.available()) {
       char c = Serial.read();
       if (c == '\n' || c == '\r') continue;
+      if (c == 'v') {
+        telemetryStreaming = true;
+        continue;
+      }
+      if (c == 'V') {
+        telemetryStreaming = false;
+        continue;
+      }
       currentCmd = c;
       lastCommandTime = millis();
     }
@@ -238,5 +306,6 @@ void loop() {
     pollAllLegs(currentCmd);
     sendStatusToClient();
     printStatusToSerialIfNeeded();
+    printTelemetryToSerial();
   }
 }

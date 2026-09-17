@@ -77,15 +77,29 @@ int main(void) {
   assert(c.state==CT_DONE && c.error==CE_NONE); /* drift is recorded, not latched */
   CarrierTick(&c,1130,715,0,'n',1130,0);
   assert(c.state==CT_MOVING && c.target_step==0 && c.target_count==-6 && c.pwm_percent==70);
+  c=ready(); CarrierTick(&c,410,-6,0,'p',410,0);
+  CarrierTick(&c,420,1400,0,'h',420,0); /* coast beyond the following +40-degree home */
+  CarrierTick(&c,730,1400,0,'h',730,0);
+  assert(c.state==CT_DONE && c.target_step==1);
+  CarrierTick(&c,740,1400,0,'p',740,0);
+  assert(c.state==CT_FAULT && c.error==CE_DIRECTION && c.pwm_percent==0);
+  c=ready_mode(CLUTCH_B); CarrierTick(&c,410,-6,0,'p',410,0);
+  CarrierTick(&c,420,-1100,0,'h',420,0); /* coast beyond the following +40-degree ring home */
+  CarrierTick(&c,730,-1100,0,'h',730,0);
+  assert(c.state==CT_DONE && c.target_step==1);
+  CarrierTick(&c,740,-1100,0,'p',740,0);
+  assert(c.state==CT_FAULT && c.error==CE_DIRECTION && c.pwm_percent==0);
   c=ready(); CarrierTick(&c,410,-6,0,'u',410,0);
   assert(c.state==CT_UNREFERENCED && !c.referenced && c.clutch_mode==CLUTCH_NONE);
-  assert(c.clutch_jog_active && c.clutch_pwm_percent==40 && c.pwm_percent==0);
-  CarrierTick(&c,500,-6,0,'h',500,0);
-  assert(c.clutch_jog_active && c.clutch_pwm_percent==40);
-  CarrierTick(&c,660,-6,0,'h',660,0);
+  assert(c.clutch_jog_active && c.clutch_pwm_percent==45 && c.pwm_percent==0);
+  CarrierTick(&c,410 + CLUTCH_JOG_DURATION_MS - 10,-6,0,'h',
+              410 + CLUTCH_JOG_DURATION_MS - 10,0);
+  assert(c.clutch_jog_active && c.clutch_pwm_percent==45);
+  CarrierTick(&c,410 + CLUTCH_JOG_DURATION_MS,-6,0,'h',
+              410 + CLUTCH_JOG_DURATION_MS,0);
   assert(!c.clutch_jog_active && c.clutch_pwm_percent==0);
   c=ready(); CarrierTick(&c,410,-6,0,'o',410,0);
-  assert(c.clutch_jog_active && c.clutch_pwm_percent==-40);
+  assert(c.clutch_jog_active && c.clutch_pwm_percent==-45);
   CarrierTick(&c,420,-3,0,'h',420,0);
   assert(c.state==CT_FAULT && c.error==CE_CLUTCH_INTERLOCK);
   assert(!c.clutch_jog_active && c.clutch_pwm_percent==0);
@@ -103,7 +117,7 @@ int main(void) {
   c=ready(); CarrierTick(&c,410,-6,0,'x',410,0);
   CarrierTick(&c,420,-6,0,'k',420,0);
   CarrierTick(&c,730,-6,0,'u',730,0);
-  assert(c.state==CT_UNREFERENCED && c.error==CE_NONE && c.clutch_pwm_percent==40);
+  assert(c.state==CT_UNREFERENCED && c.error==CE_NONE && c.clutch_pwm_percent==45);
   c=(CarrierTest){0}; CarrierTick(&c,400,0,0,'p',400,0);
   assert(c.state==CT_FAULT); /* no reference */
   c=ready(); CarrierTick(&c,410,-6,0,'p',410,0);

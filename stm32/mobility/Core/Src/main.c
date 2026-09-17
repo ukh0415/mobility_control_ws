@@ -53,7 +53,7 @@ CornerId cornerId;
 uint8_t myAddress;
 
 uint8_t i2c_rx_buf[1];
-uint8_t i2c_tx_buf[11];
+uint8_t i2c_tx_buf[18];
 volatile char lastCommand = 'k';
 volatile uint32_t command_received_ms = 0;
 volatile uint8_t command_link_error = 0;
@@ -132,16 +132,22 @@ void ApplyCommand(char cmd)
 void PrepareStatusBuffer(void)
 {
   uint32_t motor2_snapshot = (uint32_t)motor2_encoder_count;
+  uint32_t target_snapshot = (uint32_t)carrier_test.target_count;
+  uint16_t step_snapshot = (uint16_t)carrier_test.target_step;
   i2c_tx_buf[0] = currentState;
   i2c_tx_buf[1] = (uint8_t)(outputAngleTenths & 0xFF);
   i2c_tx_buf[2] = (uint8_t)(((uint16_t)outputAngleTenths >> 8) & 0xFFU);
-  i2c_tx_buf[3] = 6U; /* Motor3 jog + manual clutch A/B test protocol version. */
+  i2c_tx_buf[3] = 7U; /* Motor2 tuning telemetry protocol version. */
   i2c_tx_buf[4] = carrier_test.clutch_mode;
   i2c_tx_buf[5] = (uint8_t)(int8_t)carrier_test.clutch_pwm_percent;
   i2c_tx_buf[6] = carrier_test.error;
   for (uint32_t i = 0; i < 4U; ++i) {
     i2c_tx_buf[7U + i] = (uint8_t)(motor2_snapshot >> (8U * i));
+    i2c_tx_buf[11U + i] = (uint8_t)(target_snapshot >> (8U * i));
   }
+  i2c_tx_buf[15] = (uint8_t)(int8_t)carrier_test.pwm_percent;
+  i2c_tx_buf[16] = (uint8_t)(step_snapshot & 0xFFU);
+  i2c_tx_buf[17] = (uint8_t)(step_snapshot >> 8);
 }
 
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection,
